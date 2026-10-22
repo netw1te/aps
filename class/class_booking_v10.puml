@@ -34,6 +34,7 @@ package "Данные" {
     - serviceEndAt: double
     - state: BookingState
     --
+    .. приоритет = sourceId, меньше номер — выше ..
     + priority(): int
     + label(): String
     + getState(): BookingState
@@ -62,6 +63,8 @@ package "Элементы СМО" {
     - b: double
     - generated: int
     --
+    .. приоритет источника = его номер id ..
+    + priority(): int
     + nextInterval(): double
     + buildRequest(now: double): BookingRequest
   }
@@ -180,6 +183,8 @@ package "Ядро моделирования" {
     + step(): boolean
     + runRealization(n: int): void
     + totalTime(): double
+    + rejectProbability(): double
+    + buildTable(): ResultTable
   }
 
   class EventCalendar {
@@ -188,6 +193,7 @@ package "Ядро моделирования" {
     + push(ev: TimedEvent): void
     + pop(): TimedEvent
     + isEmpty(): boolean
+    + removeAll(kind: EventKind): void
     + snapshot(): TimedEvent[]
   }
 
@@ -210,7 +216,7 @@ package "Ядро моделирования" {
     - n0: int = 100
     --
     + requiredN(p: double): int
-    + findN(): ResultTable
+    + findN(): int
   }
 }
 
@@ -229,6 +235,7 @@ package "Статистика и отображение" {
   }
 
   class SourceStat {
+    - sourceId: int
     - generated: int
     - served: int
     - rejected: int
@@ -332,7 +339,6 @@ JournalEntry --> JournalKind
 StatsCollector *-- "1..*" SourceStat
 StatsCollector ..> ResultTable : формирует
 PrecisionController ..> Simulation : запускает реализации
-PrecisionController --> ResultTable
 StepRenderer --> EventCalendar
 StepRenderer --> SlotBuffer
 StepRenderer --> BookingServer
@@ -348,8 +354,8 @@ RELEASE освобождает прибор и запускает ДВ.
 ДП работает только с буфером и о приборах не знает.
 Статистика: onGenerated при генерации, onRejected при отказе
 (новая или выбитая), onServed при RELEASE.
-Генерация прекращается после N-й заявки, работа заканчивается
-после выхода последней заявки из системы.
+После N-й заявки ожидающие ARRIVAL удаляются из календаря,
+работа заканчивается после выхода последней заявки.
 Атрибуты всех классов закрыты (private), состояние меняется только методами.
 end note
 
