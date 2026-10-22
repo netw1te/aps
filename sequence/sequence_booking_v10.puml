@@ -1,86 +1,79 @@
 @startuml sequence_booking_v10
-title Бронирование билетов — сценарии (вариант 10)
+title Бронирование билетов — сценарии работы модели (вариант 10)
 autonumber
 
-actor "Мобильное приложение\n/ касса" as Client
-participant "Источник\n(ИБ, ИЗ2)" as Src
 participant "Календарь\nсобытий" as Cal
-participant "Диспетчер\nпостановки" as Adm
-database "Буфер\n(Д1О33)" as Buf
-participant "Диспетчер\nвыбора" as Sel
-participant "Сервер\nбронирования (П31)" as Srv
+participant "Источник\n(ИБ, ИЗ2)" as Src
+participant "Диспетчер\nпостановки (ДП)" as DP
+database "Буфер\n(Д1ОЗ3)" as Buf
+participant "Диспетчер\nвыбора (ДВ)" as DV
+participant "Прибор\n(ПЗ1)" as Dev
 participant "Статистика\n(ОР1)" as St
 
-== A. Приход заявки ==
+== A. Приход заявки: событие ARRIVAL(i, t) ==
 
-Client -> Src : запрос на бронь
-Src -> Src : построить BookingRequest
-Src -> Cal : push ARRIVAL(t_next) по U[a,b]
-Cal --> Src : событие запланировано
+Cal -> Src : ARRIVAL(i, t)
+Src -> Src : buildRequest(t), номер (i.j), Tвх = t
+Src -> St : onGenerated(req)
 
-Cal -> Adm : ARRIVAL(t)
-Adm -> Buf : firstEmptySlot()
-Buf --> Adm : slot | NONE
-
-alt есть свободное место
-  Adm -> Buf : place(slot, req)
-  Buf --> Adm : ok
-else буфер полон
-  Adm -> Buf : locateByPriority()
-  Buf --> Adm : victim_slot, victim_req
-  Adm -> St : onRejected(victim_req)
-  Adm -> Buf : place(victim_slot, req)
-  Buf --> Adm : ok
-end
-Adm -> St : onCreated(req)
-
-== B. Пульс передачи на сервер ==
-
-Sel -> Buf : occupiedCount() > 0 ?
-Buf --> Sel : да / нет
-
-group пока есть заявки и idle-сервер
-  Sel -> Buf : pickPackage()
-  Buf --> Sel : pkg
-  Sel -> Sel : pickServer(servers, serverPtr)
-  Sel -> Buf : takeOut(pkg.first().slot)
-  Buf --> Sel : req
-  Sel -> Srv : beginService(req, now)
-  Srv --> Sel : endAt
-  Sel -> Cal : push RELEASE(srv, endAt)
-  Cal --> Sel : ok
-  Sel -> Sel : serverPtr = (serverPtr+1) mod m
+opt generated < N
+  Src -> Cal : push ARRIVAL(i, t + U[a, b])
 end
 
-== C. Завершение обслуживания ==
+Src -> DP : onArrival(req, t)
+DP -> Buf : firstEmptySlot()
+Buf --> DP : slot | NONE
 
-Cal -> Srv : RELEASE(t)
-Srv -> Srv : complete(t)
-Srv --> Cal : served_req
-Cal -> St : onServed(served_req, wait, service)
-Cal -> Sel : сервер освободился
-Sel -> Buf : pickPackage()
-Buf --> Sel : pkg | EMPTY
-alt буфер не пуст
-  Sel -> Srv : beginService(next_req, t)
-  Srv --> Sel : endAt
-  Sel -> Cal : push RELEASE(srv, endAt)
-else буфер пуст
-  Sel --> Cal : сервер остаётся idle
+alt есть свободное место (Д1ОЗ3)
+  DP -> Buf : place(slot, req)
+else буфер полон (Д1ОО2)
+  DP -> DP : chooseVictim(buffer, req)
+  alt victim = req (новая заявка приоритетом ниже всех)
+    DP -> St : onRejected(req)
+  else victim — заявка из буфера
+    DP -> DV : onEvicted(victim)
+    DP -> St : onRejected(victim)
+    DP -> Buf : takeOut(slotOf(victim))
+    DP -> Buf : place(slot, req)
+  end
 end
 
-note over Adm, Buf
-Д1О33: постановка в первое свободное место,
-сдвига очереди нет.
-Д1ОО2: при полном буфере вытесняется заявка
-источника с наибольшим номером (низший приоритет);
-заявки на серверах не вытесняются.
+DP -> DV : dispatch(t)
+ref over DV, Buf, Dev, Cal : B. Передача заявок на приборы
+
+== B. Передача заявок на приборы: dispatch(t) ==
+
+loop пока буфер не пуст и есть свободный прибор
+  DV -> DV : next(buffer) — Д2Б5: пакет приоритетного источника
+  DV -> DV : pickDevice(servers) — Д2П2: поиск по кольцу от pointer
+  DV -> DV : pointer = (d + 1) mod m
+  DV -> Buf : takeOut(slotOf(req))
+  Buf --> DV : req
+  DV -> Dev : beginService(req, t)
+  Dev --> DV : endAt
+  DV -> Cal : push RELEASE(d, endAt)
+end
+
+== C. Завершение обслуживания: событие RELEASE(d, t) ==
+
+Cal -> Dev : RELEASE(d, t)
+Dev -> Dev : complete(t)
+Dev --> Cal : served_req
+Cal -> St : onServed(served_req)
+Cal -> DV : dispatch(t)
+ref over DV, Buf, Dev, Cal : B. Передача заявок на приборы
+
+note over DP, Buf
+Д1ОЗ3: постановка на первое свободное место, сдвига очереди нет.
+Д1ОО2: при полном буфере отказ получает заявка источника с наибольшим
+номером (низший приоритет); среди равных — самая поздняя.
+Заявки на приборах не вытесняются.
 end note
 
-note over Sel, Srv
-Д2Б5: выбирается пакет заявок приоритетного источника;
+note over DV, Dev
+Д2Б5: когда пакет пуст, фиксируется снимок заявок приоритетного источника;
 новые заявки этого источника в пакет не добавляются.
-Д2П2: свободный сервер ищется по кольцу от serverPtr.
+Д2П2: свободный прибор ищется по кольцу от pointer, затем pointer = (d + 1) mod m.
 end note
 
 @enduml
