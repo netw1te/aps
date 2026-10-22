@@ -1,71 +1,128 @@
 @startuml flowchart_booking_v10
-title Моделирующий алгоритм — бронирование билетов (вариант 10)
+title Обобщённая блок-схема моделирующего алгоритма — бронирование билетов (вариант 10)
 skinparam activityShape rectangle
 
 start
-:init: t=0, буфер пуст, все серверы idle;
-:для каждого источника запланировать ARRIVAL по U[a,b];
+:N := N0 = 100;
+:p_prev := не задано;
+:done := false;
 
-while (календарь не пуст) is (да)
-  :pop ближайший TimedEvent;
-  :t = event.time;
+repeat
+  partition "Одна реализация (N заявок)" {
+    :t := 0, generated := 0,
+    буфер пуст, все приборы свободны,
+    указатель Д2П2 := 0, пакет Д2Б5 пуст,
+    статистика обнулена;
+    :для каждого источника i запланировать
+    ARRIVAL(i) в момент U[a, b];
 
-  if (event.kind == ARRIVAL) then (ARRIVAL)
-    partition "Источник (ИБ, ИЗ2)" {
-      :req = buildRequest(t);
-      :запланировать следующий ARRIVAL
-      для этого источника (U[a,b]);
-    }
-    partition "Диспетчер постановки" {
-      :slot = buffer.firstEmptySlot();
-    }
-    if (slot != NONE) then (есть место)
-      partition "Д1О33" {
-        :buffer.place(slot, req) — без сдвига;
-      }
-    else (буфер полон)
-      partition "Д1ОО2" {
-        :victim = buffer.locateByPriority();
-        :stats.onRejected(victim.req);
-        :buffer.place(victim.slot, req) — новая на место вытесненной;
-      }
+    while (календарь событий не пуст?) is (да)
+      :ev := calendar.pop();
+
+      if (ev.kind = ARRIVAL и generated >= N?) then (да)
+        :событие отбрасывается (генерация закончена),
+        модельное время не меняется;
+      else (нет)
+        :t := ev.time;
+
+        if (ev.kind = ARRIVAL?) then (ARRIVAL)
+          partition "Источник (ИБ, ИЗ2)" {
+            :req := buildRequest(t)
+            номер (i.j), Tвх = t;
+            :stats.onGenerated(req);
+            :generated := generated + 1;
+            if (generated < N?) then (да)
+              :запланировать следующий ARRIVAL
+              источника i в момент t + U[a, b];
+            else (нет)
+              :генерация закончена,
+              новые ARRIVAL не планируются;
+            endif
+          }
+
+          partition "Диспетчер постановки (ДП)" {
+            partition "Д1ОЗ3" {
+              :slot := buffer.firstEmptySlot();
+            }
+            if (slot найден?) then (да)
+              :buffer.place(slot, req), без сдвига;
+              :req.state := QUEUED;
+            else (нет, буфер полон)
+              partition "Д1ОО2" {
+                :v := rejection.chooseVictim(buffer, req);
+              }
+              if (v = req?) then (новая хуже всех)
+                :stats.onRejected(req);
+                :req.state := REJECTED;
+              else (вытесняется из буфера)
+                :selection.onEvicted(v);
+                :stats.onRejected(v);
+                :slot := buffer.slotOf(v);
+                :buffer.takeOut(slot);
+                :buffer.place(slot, req);
+                :req.state := QUEUED;
+              endif
+            endif
+          }
+
+        else (RELEASE)
+          partition "Прибор (ПЗ1)" {
+            :served := servers[ev.serverId].complete(t);
+            :stats.onServed(served);
+          }
+        endif
+
+        partition "Диспетчер выбора (ДВ)" {
+          while (буфер не пуст и есть свободный прибор?) is (да)
+            partition "Д2Б5" {
+              :req := selection.next(buffer)
+              если пакет пуст: источник с наименьшим номером,
+              снимок его заявок (FIFO);
+            }
+            partition "Д2П2" {
+              :d := devicePolicy.pickDevice(servers);
+              :pointer := (d + 1) mod m;
+            }
+            :buffer.takeOut(buffer.slotOf(req));
+            :endAt := servers[d].beginService(req, t);
+            :calendar.push(RELEASE(d, endAt));
+          endwhile (нет)
+        }
+
+        partition "ОД1" {
+          if (пошаговый режим?) then (да)
+            :render: календарь событий, буфер,
+            приборы, указатель Д2Б5/Д2П2,
+            текущая доля отказов;
+          else (нет)
+          endif
+        }
+      endif
+    endwhile (нет)
+
+    :T_реал := t
+    (момент выхода последней заявки);
+  }
+
+  :p := число отказов / N;
+
+  if (p_prev задано и |p_prev − p| < 0.1 · p_prev?) then (да)
+    :done := true;
+  else (нет)
+    :p_prev := p;
+    if (p = 0?) then (да)
+      :N := 2 · N;
+    else (нет)
+      :N := t² · (1 − p) / (δ² · p),
+      t = 1.643, δ = 0.1;
     endif
-    :stats.onCreated(req);
-  else (RELEASE)
-    partition "Сервер (П31)" {
-      :served = server.complete(t);
-      :stats.onServed(served, wait, service);
-    }
   endif
-
-  partition "Диспетчер выбора" {
-    :проверить: есть заявки в буфере и idle-сервер?;
-  }
-  while (buffer.occupiedCount() > 0 and есть idle server) is (да)
-    partition "Д2Б5" {
-      :pkg = selection.pickPackage(buffer);
-    }
-    partition "Д2П2" {
-      :srv = selection.pickServer(servers, serverPtr);
-      :serverPtr = (srv + 1) mod m;
-    }
-    :req = pkg.first();
-    :buffer.takeOut(req.slot);
-    partition "П31" {
-      :endAt = servers[srv].beginService(req, t);
-      :запланировать RELEASE(srv) на endAt;
-    }
-  endwhile (нет)
-
-  partition "ОД1" {
-    :render step: календарь, буфер,
-    серверы, указатели, доля отказов;
-  }
-endwhile (нет)
+repeat while (done = false?) is (да) not (нет)
 
 partition "ОР1" {
-  :вывести сводную таблицу
-  по источникам и серверам;
+  :Таблица 1: по источникам (число заявок, Pотк, Tпреб, Tож, Tобсл,
+  дисперсии Tож и Tобсл);
+  :Таблица 2: по приборам, Kисп = busyTotal / T_реал;
 }
 stop
 @enduml
