@@ -1,0 +1,71 @@
+@startuml flowchart_booking_v10
+title Моделирующий алгоритм — бронирование билетов (вариант 10)
+skinparam activityShape rectangle
+
+start
+:init: t=0, буфер пуст, все серверы idle;
+:для каждого источника запланировать ARRIVAL по U[a,b];
+
+while (календарь не пуст) is (да)
+  :pop ближайший TimedEvent;
+  :t = event.time;
+
+  if (event.kind == ARRIVAL) then (ARRIVAL)
+    partition "Источник (ИБ, ИЗ2)" {
+      :req = buildRequest(t);
+      :запланировать следующий ARRIVAL
+      для этого источника (U[a,b]);
+    }
+    partition "Диспетчер постановки" {
+      :slot = buffer.firstEmptySlot();
+    }
+    if (slot != NONE) then (есть место)
+      partition "Д1О33" {
+        :buffer.place(slot, req) — без сдвига;
+      }
+    else (буфер полон)
+      partition "Д1ОО2" {
+        :victim = buffer.locateByPriority();
+        :stats.onRejected(victim.req);
+        :buffer.place(victim.slot, req) — новая на место вытесненной;
+      }
+    endif
+    :stats.onCreated(req);
+  else (RELEASE)
+    partition "Сервер (П31)" {
+      :served = server.complete(t);
+      :stats.onServed(served, wait, service);
+    }
+  endif
+
+  partition "Диспетчер выбора" {
+    :проверить: есть заявки в буфере и idle-сервер?;
+  }
+  while (buffer.occupiedCount() > 0 and есть idle server) is (да)
+    partition "Д2Б5" {
+      :pkg = selection.pickPackage(buffer);
+    }
+    partition "Д2П2" {
+      :srv = selection.pickServer(servers, serverPtr);
+      :serverPtr = (srv + 1) mod m;
+    }
+    :req = pkg.first();
+    :buffer.takeOut(req.slot);
+    partition "П31" {
+      :endAt = servers[srv].beginService(req, t);
+      :запланировать RELEASE(srv) на endAt;
+    }
+  endwhile (нет)
+
+  partition "ОД1" {
+    :render step: календарь, буфер,
+    серверы, указатели, доля отказов;
+  }
+endwhile (нет)
+
+partition "ОР1" {
+  :вывести сводную таблицу
+  по источникам и серверам;
+}
+stop
+@enduml

@@ -1,0 +1,214 @@
+@startuml class_booking_v10
+title Домен «Бронирование билетов» — модель классов (вариант 10)
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+
+package "Домен кинотеатра" {
+  class CinemaHall {
+    - hallId: int
+    - seats: Seat[]
+    - sessionTime: LocalDateTime
+    --
+    + hasFreeSeats(count: int): boolean
+    + reserve(seatIds: int[]): boolean
+  }
+
+  class Seat {
+    - row: int
+    - number: int
+    - reserved: boolean
+  }
+
+  class BookingRequest {
+    - requestId: long
+    - sourceId: int
+    - tariff: SourcePriority
+    - sessionId: int
+    - seatIds: int[]
+    - ticketsCount: int
+    - createdAt: double
+    - enqueuedAt: double
+    - serviceStartAt: double
+    - serviceEndAt: double
+    - state: BookingState
+    --
+    + priority(): SourcePriority
+    + transitionTo(s: BookingState, t: double): void
+  }
+
+  enum BookingState {
+    CREATED
+    QUEUED
+    BOOKING
+    CONFIRMED
+    REJECTED
+  }
+
+  enum SourcePriority {
+    CASH_DESK = 1
+    MOBILE_APP = 2
+  }
+}
+
+package "Модель СМО" {
+  class BookingSource {
+    - id: int
+    - tariff: SourcePriority
+    - a: double
+    - b: double
+    --
+    + nextArrivalTime(now: double): double
+    + buildRequest(now: double): BookingRequest
+  }
+
+  class SlotBuffer {
+    - slots: BookingRequest[]
+    - capacity: int
+    --
+    + firstEmptySlot(): int
+    + place(slot: int, req: BookingRequest): void
+    + takeOut(slot: int): BookingRequest
+    + locateByPriority(): {slot, req}
+    + occupiedCount(): int
+  }
+
+  class BookingServer {
+    - serverId: int
+    - busyUntil: double
+    - mu: double
+    --
+    + isIdle(now: double): boolean
+    + beginService(req: BookingRequest, now: double): double
+    + complete(now: double): BookingRequest
+  }
+}
+
+package "Политики дисциплин" {
+  interface AdmissionPolicy {
+    + admit(req, buffer, stats): void
+  }
+  class FirstFreeSlotPolicy {
+  }
+  interface RejectionPolicy {
+    + selectVictim(buffer): {slot, req}
+  }
+  class LowestPriorityVictimPolicy {
+  }
+  interface SelectionPolicy {
+    + pickPackage(buffer): BookingRequest[]
+    + pickServer(servers, ptr): int
+  }
+  class PackagePriorityPolicy {
+  }
+  class RingServerPolicy {
+  }
+}
+
+package "Оркестрация" {
+  class BookingSimulation {
+    - sources: BookingSource[]
+    - calendar: EventCalendar
+    - buffer: SlotBuffer
+    - servers: BookingServer[]
+    - admission: AdmissionPolicy
+    - rejection: RejectionPolicy
+    - selection: SelectionPolicy
+    - stats: BookingStats
+    - serverPtr: int
+    --
+    + advance(): void
+    + runUntil(t: double): void
+  }
+
+  class EventCalendar {
+    - queue: PriorityQueue<TimedEvent>
+    + push(ev: TimedEvent): void
+    + pop(): TimedEvent
+  }
+
+  class TimedEvent {
+    - time: double
+    - kind: EventKind
+    - payload: BookingRequest
+    - serverId: int
+  }
+
+  enum EventKind {
+    ARRIVAL
+    RELEASE
+    STOP
+  }
+
+  class BookingStats {
+    - perSource: Map<SourcePriority, SourceStat>
+    - perServer: Map<int, double>
+    --
+    + onCreated(r: BookingRequest): void
+    + onRejected(r: BookingRequest): void
+    + onServed(r: BookingRequest, wait: double, service: double): void
+    + table(): ResultTable
+  }
+}
+
+BookingRequest --> BookingState
+BookingRequest --> SourcePriority
+BookingRequest --> CinemaHall : sessionId
+CinemaHall *-- "1..*" Seat
+
+BookingSource ..> BookingRequest : создаёт
+BookingSource --> SourcePriority
+
+SlotBuffer o-- "0..*" BookingRequest
+BookingServer ..> BookingRequest : обрабатывает
+
+BookingSimulation *-- EventCalendar
+BookingSimulation *-- SlotBuffer
+BookingSimulation *-- BookingStats
+BookingSimulation o-- "1..*" BookingSource
+BookingSimulation o-- "1..*" BookingServer
+BookingSimulation --> AdmissionPolicy
+BookingSimulation --> RejectionPolicy
+BookingSimulation --> SelectionPolicy
+
+AdmissionPolicy <|.. FirstFreeSlotPolicy
+RejectionPolicy <|.. LowestPriorityVictimPolicy
+SelectionPolicy <|.. PackagePriorityPolicy
+SelectionPolicy <|.. RingServerPolicy
+
+FirstFreeSlotPolicy ..> SlotBuffer
+LowestPriorityVictimPolicy ..> SlotBuffer
+PackagePriorityPolicy ..> SlotBuffer
+RingServerPolicy ..> BookingServer
+
+EventCalendar o-- "0..*" TimedEvent
+TimedEvent --> EventKind
+TimedEvent --> BookingRequest
+
+note right of SlotBuffer
+Д1О33: firstEmptySlot() — первое свободное
+место от начала; сдвига очереди нет.
+end note
+
+note right of LowestPriorityVictimPolicy
+Д1ОО2: при полном буфере вытесняется заявка
+источника с наибольшим номером
+(наименьший приоритет). Новая занимает её место.
+end note
+
+note right of PackagePriorityPolicy
+Д2Б5: выбирается пакет заявок приоритетного
+источника; новые заявки этого источника
+в уже сформированный пакет не добавляются.
+end note
+
+note right of RingServerPolicy
+Д2П2: поиск свободного сервера по кольцу
+от serverPtr.
+end note
+
+note bottom of BookingStats
+ОР1: сводная таблица по источникам и серверам.
+ОД1: календарь событий и текущее состояние
+буфера/серверов.
+end note
+@enduml

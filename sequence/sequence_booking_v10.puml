@@ -1,0 +1,86 @@
+@startuml sequence_booking_v10
+title Бронирование билетов — сценарии (вариант 10)
+autonumber
+
+actor "Мобильное приложение\n/ касса" as Client
+participant "Источник\n(ИБ, ИЗ2)" as Src
+participant "Календарь\nсобытий" as Cal
+participant "Диспетчер\nпостановки" as Adm
+database "Буфер\n(Д1О33)" as Buf
+participant "Диспетчер\nвыбора" as Sel
+participant "Сервер\nбронирования (П31)" as Srv
+participant "Статистика\n(ОР1)" as St
+
+== A. Приход заявки ==
+
+Client -> Src : запрос на бронь
+Src -> Src : построить BookingRequest
+Src -> Cal : push ARRIVAL(t_next) по U[a,b]
+Cal --> Src : событие запланировано
+
+Cal -> Adm : ARRIVAL(t)
+Adm -> Buf : firstEmptySlot()
+Buf --> Adm : slot | NONE
+
+alt есть свободное место
+  Adm -> Buf : place(slot, req)
+  Buf --> Adm : ok
+else буфер полон
+  Adm -> Buf : locateByPriority()
+  Buf --> Adm : victim_slot, victim_req
+  Adm -> St : onRejected(victim_req)
+  Adm -> Buf : place(victim_slot, req)
+  Buf --> Adm : ok
+end
+Adm -> St : onCreated(req)
+
+== B. Пульс передачи на сервер ==
+
+Sel -> Buf : occupiedCount() > 0 ?
+Buf --> Sel : да / нет
+
+group пока есть заявки и idle-сервер
+  Sel -> Buf : pickPackage()
+  Buf --> Sel : pkg
+  Sel -> Sel : pickServer(servers, serverPtr)
+  Sel -> Buf : takeOut(pkg.first().slot)
+  Buf --> Sel : req
+  Sel -> Srv : beginService(req, now)
+  Srv --> Sel : endAt
+  Sel -> Cal : push RELEASE(srv, endAt)
+  Cal --> Sel : ok
+  Sel -> Sel : serverPtr = (serverPtr+1) mod m
+end
+
+== C. Завершение обслуживания ==
+
+Cal -> Srv : RELEASE(t)
+Srv -> Srv : complete(t)
+Srv --> Cal : served_req
+Cal -> St : onServed(served_req, wait, service)
+Cal -> Sel : сервер освободился
+Sel -> Buf : pickPackage()
+Buf --> Sel : pkg | EMPTY
+alt буфер не пуст
+  Sel -> Srv : beginService(next_req, t)
+  Srv --> Sel : endAt
+  Sel -> Cal : push RELEASE(srv, endAt)
+else буфер пуст
+  Sel --> Cal : сервер остаётся idle
+end
+
+note over Adm, Buf
+Д1О33: постановка в первое свободное место,
+сдвига очереди нет.
+Д1ОО2: при полном буфере вытесняется заявка
+источника с наибольшим номером (низший приоритет);
+заявки на серверах не вытесняются.
+end note
+
+note over Sel, Srv
+Д2Б5: выбирается пакет заявок приоритетного источника;
+новые заявки этого источника в пакет не добавляются.
+Д2П2: свободный сервер ищется по кольцу от serverPtr.
+end note
+
+@enduml
