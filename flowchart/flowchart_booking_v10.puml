@@ -22,11 +22,7 @@ repeat
   while (календарь событий не пуст?) is (да)
     :ev := calendar.pop();
 
-    if (ev = ARRIVAL и generated >= N?) then (да)
-      :событие отбрасывается,
-      время t не меняется;
-    else (нет)
-      :t := ev.time;
+    :t := ev.time;
 
       if (ev.kind = ARRIVAL?) then (ARRIVAL)
         |Источник|
@@ -40,7 +36,7 @@ repeat
           :планируем следующий ARRIVAL(i)
           в момент t + U[a, b];
         else (нет)
-          :генерация закончена,
+          :последняя заявка: calendar.removeAll(ARRIVAL),
           новые ARRIVAL не планируются;
         endif
 
@@ -81,9 +77,13 @@ repeat
         если пакет пуст, формируется новый
         снимок заявок источника с наименьшим
         номером, журнал PACKAGE_FORMED;
-        :Д2П2: d := pickDevice(servers)
-        поиск по кольцу от pointer,
-        pointer := (d + 1) mod m;
+        :Д2П2: pickDevice(servers)
+        поиск по кольцу от pointer;
+        |Прибор|
+        :isIdle() у приборов по кольцу,
+        первый свободный прибор d;
+        |ДВ|
+        :pointer := (d + 1) mod m;
         :takeOut(slotOf(req)),
         журнал PICKED_FROM_PACKAGE;
         |Прибор|
@@ -100,7 +100,6 @@ repeat
         приборы, pointer, пакет, доля отказов;
       else (нет)
       endif
-    endif
   endwhile (нет)
 
   |Ядро|
