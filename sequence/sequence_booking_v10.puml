@@ -31,10 +31,13 @@ loop пока календарь событий не пуст
     Src --> Core : req (номер i.j, Tвх = t)
     Core -> St : onGenerated(req)
     Core -> J : log(GENERATED, req)
-    opt generated < N
+    alt generated < N
       Core -> Src : nextInterval()
       Src --> Core : dt ~ U[a, b] (ИЗ2)
       Core -> Cal : push ARRIVAL(i, t + dt)
+    else generated = N: сгенерирована последняя заявка
+      Core -> Cal : removeAll(ARRIVAL)
+      Cal --> Core : ok
     end
 
     Core -> DP : placeRequest(req, t)
