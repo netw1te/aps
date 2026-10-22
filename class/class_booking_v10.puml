@@ -1,17 +1,25 @@
 @startuml class_booking_v10
-title Модульная структура модели — бронирование билетов (вариант 10)
+title Диаграмма классов — бронирование билетов (вариант 10)
 skinparam classAttributeIconSize 0
 skinparam packageStyle rectangle
 
 package "Данные" {
   class SimulationConfig {
-    + sourceCount: int
-    + deviceCount: int
-    + bufferCapacity: int
-    + a: double
-    + b: double
-    + mu: double
-    + totalRequests: int
+    - sourceCount: int
+    - deviceCount: int
+    - bufferCapacity: int
+    - a: double
+    - b: double
+    - mu: double
+    - totalRequests: int
+    --
+    + getSourceCount(): int
+    + getDeviceCount(): int
+    + getBufferCapacity(): int
+    + getA(): double
+    + getB(): double
+    + getMu(): double
+    + getTotalRequests(): int
   }
 
   class BookingRequest {
@@ -28,6 +36,11 @@ package "Данные" {
     --
     + priority(): int
     + label(): String
+    + getState(): BookingState
+    + markQueued(t: double): void
+    + markRejected(t: double): void
+    + markServing(t: double, endAt: double): void
+    + markServed(): void
     + waitTime(): double
     + serviceTime(): double
     + sojournTime(): double
@@ -63,7 +76,9 @@ package "Элементы СМО" {
     + takeOut(slot: int): BookingRequest
     + slotOf(req: BookingRequest): int
     + requestsOfSource(sourceId: int): BookingRequest[]
+    + highestPrioritySourceId(): int
     + lowestPrioritySourceId(): int
+    + snapshot(): BookingRequest[]
   }
 
   class BookingServer {
@@ -75,15 +90,29 @@ package "Элементы СМО" {
     + isIdle(): boolean
     + beginService(req: BookingRequest, now: double): double
     + complete(now: double): BookingRequest
+    + getBusyTotal(): double
   }
 }
 
 package "Диспетчеры и дисциплины" {
   class PlacementDispatcher <<ДП>> {
-    + onArrival(req: BookingRequest, now: double): void
+    - buffer: SlotBuffer
+    - admission: AdmissionPolicy
+    - rejection: RejectionPolicy
+    - stats: StatsCollector
+    - journal: EventJournal
+    --
+    + placeRequest(req: BookingRequest, now: double): void
   }
 
   class SelectionDispatcher <<ДВ>> {
+    - buffer: SlotBuffer
+    - servers: BookingServer[]
+    - calendar: EventCalendar
+    - requestPolicy: RequestSelectionPolicy
+    - devicePolicy: DevicePolicy
+    - journal: EventJournal
+    --
     + dispatch(now: double): void
   }
 
@@ -91,31 +120,46 @@ package "Диспетчеры и дисциплины" {
     + findSlot(buffer: SlotBuffer): int
   }
   class FirstFreeSlotPolicy <<Д1ОЗ3>> {
+    .. Д1ОЗ3 ..
+    первое свободное место от начала
+    сдвига очереди нет
   }
 
   interface RejectionPolicy <<Д1ОО>> {
     + chooseVictim(buffer: SlotBuffer, incoming: BookingRequest): BookingRequest
   }
   class LowestPriorityRejection <<Д1ОО2>> {
+    .. Д1ОО2 ..
+    отказ: наибольший номер источника в буфере
+    среди равных: самая поздняя по createdAt
+    новая ниже всех: отказ получает она сама
+    заявки на приборах не вытесняются
   }
 
   interface RequestSelectionPolicy <<Д2Б>> {
     + next(buffer: SlotBuffer): BookingRequest
-    + onEvicted(req: BookingRequest): void
+    + currentPackage(): BookingRequest[]
   }
   class PackagePriorityPolicy <<Д2Б5>> {
     - pkg: Deque<BookingRequest>
-    --
-    + currentPackage(): BookingRequest[]
+    .. Д2Б5 ..
+    пакет пуст: снимок заявок источника
+    с наименьшим номером, FIFO по createdAt
+    пакет не расширяется, его делят все приборы
+    выбитые заявки пропускаются в next()
   }
 
   interface DevicePolicy <<Д2П>> {
+    + hasIdle(servers: BookingServer[]): boolean
     + pickDevice(servers: BookingServer[]): int
+    + pointer(): int
   }
   class RingDevicePolicy <<Д2П2>> {
-    - pointer: int
-    --
-    + pointer(): int
+    - ptr: int
+    .. Д2П2 ..
+    поиск свободного прибора по кольцу от ptr
+    после выбора i: ptr := (i + 1) mod m
+    единственный указатель в варианте 10
   }
 }
 
@@ -129,6 +173,7 @@ package "Ядро моделирования" {
     - placement: PlacementDispatcher
     - selection: SelectionDispatcher
     - stats: StatsCollector
+    - journal: EventJournal
     - now: double
     - generated: int
     --
@@ -159,18 +204,22 @@ package "Ядро моделирования" {
   }
 
   class PrecisionController {
+    - config: SimulationConfig
     - t: double = 1.643
     - delta: double = 0.1
     - n0: int = 100
     --
     + requiredN(p: double): int
-    + findN(cfg: SimulationConfig): ResultTable
+    + findN(): ResultTable
   }
 }
 
 package "Статистика и отображение" {
   class StatsCollector {
     - perSource: SourceStat[]
+    .. ОР1 ..
+    таблица 1 по источникам, таблица 2 по приборам
+    Kисп = busyTotal / totalTime
     --
     + onGenerated(r: BookingRequest): void
     + onRejected(r: BookingRequest): void
@@ -201,8 +250,40 @@ package "Статистика и отображение" {
     - deviceUtilization: double[]
   }
 
+  class EventJournal {
+    - entries: JournalEntry[]
+    --
+    + log(kind: JournalKind, req: BookingRequest, t: double): void
+    + entries(): JournalEntry[]
+  }
+
+  class JournalEntry {
+    - time: double
+    - kind: JournalKind
+    - request: BookingRequest
+  }
+
+  enum JournalKind {
+    GENERATED
+    BUFFERED
+    REJECTED_NEW
+    EVICTED
+    PACKAGE_FORMED
+    PICKED_FROM_PACKAGE
+    SENT_TO_DEVICE
+    SERVED
+  }
+
   class StepRenderer <<ОД1>> {
-    + render(sim: Simulation): void
+    - calendar: EventCalendar
+    - buffer: SlotBuffer
+    - servers: BookingServer[]
+    - requestPolicy: RequestSelectionPolicy
+    - devicePolicy: DevicePolicy
+    - journal: EventJournal
+    - stats: StatsCollector
+    --
+    + render(now: double): void
   }
 
   class ResultPrinter <<ОР1>> {
@@ -221,20 +302,22 @@ Simulation o-- "1..*" BookingServer
 Simulation *-- SlotBuffer
 Simulation *-- EventCalendar
 Simulation *-- StatsCollector
+Simulation *-- EventJournal
 Simulation *-- PlacementDispatcher
 Simulation *-- SelectionDispatcher
 
+PlacementDispatcher --> SlotBuffer
 PlacementDispatcher --> AdmissionPolicy
 PlacementDispatcher --> RejectionPolicy
-PlacementDispatcher --> RequestSelectionPolicy : onEvicted
-PlacementDispatcher --> SlotBuffer
 PlacementDispatcher --> StatsCollector
+PlacementDispatcher --> EventJournal
 
-SelectionDispatcher --> RequestSelectionPolicy
-SelectionDispatcher --> DevicePolicy
 SelectionDispatcher --> SlotBuffer
 SelectionDispatcher --> BookingServer
 SelectionDispatcher --> EventCalendar
+SelectionDispatcher --> RequestSelectionPolicy
+SelectionDispatcher --> DevicePolicy
+SelectionDispatcher --> EventJournal
 
 AdmissionPolicy <|.. FirstFreeSlotPolicy
 RejectionPolicy <|.. LowestPriorityRejection
@@ -243,44 +326,31 @@ DevicePolicy <|.. RingDevicePolicy
 
 EventCalendar o-- "0..*" TimedEvent
 TimedEvent --> EventKind
+EventJournal o-- "0..*" JournalEntry
+JournalEntry --> JournalKind
 
 StatsCollector *-- "1..*" SourceStat
 StatsCollector ..> ResultTable : формирует
 PrecisionController ..> Simulation : запускает реализации
 PrecisionController --> ResultTable
-StepRenderer ..> Simulation
+StepRenderer --> EventCalendar
+StepRenderer --> SlotBuffer
+StepRenderer --> BookingServer
+StepRenderer --> RequestSelectionPolicy
+StepRenderer --> DevicePolicy
+StepRenderer --> EventJournal
+StepRenderer --> StatsCollector
 ResultPrinter ..> ResultTable
 
-note right of FirstFreeSlotPolicy
-Д1ОЗ3: первое свободное место от начала
-буфера, сдвига очереди нет.
+note top of Simulation
+Триггеры: ARRIVAL запускает ДП (placeRequest), затем ДВ (dispatch).
+RELEASE освобождает прибор и запускает ДВ.
+ДП работает только с буфером и о приборах не знает.
+Статистика: onGenerated при генерации, onRejected при отказе
+(новая или выбитая), onServed при RELEASE.
+Генерация прекращается после N-й заявки, работа заканчивается
+после выхода последней заявки из системы.
+Атрибуты всех классов закрыты (private), состояние меняется только методами.
 end note
 
-note right of LowestPriorityRejection
-Д1ОО2: отказ получает заявка источника с наибольшим
-номером (низший приоритет) среди заявок буфера.
-Среди нескольких таких — самая поздняя по createdAt.
-Если новая заявка имеет ещё более низкий приоритет,
-чем жертва, chooseVictim возвращает саму новую заявку.
-Заявки на приборах не вытесняются.
-end note
-
-note right of PackagePriorityPolicy
-Д2Б5: когда пакет пуст, берётся источник с наименьшим
-номером среди заявок буфера и фиксируется снимок его заявок
-(по createdAt, FIFO). Новые заявки этого источника в пакет
-не попадают. Вытесненная заявка удаляется из пакета (onEvicted).
-end note
-
-note right of RingDevicePolicy
-Д2П2: поиск свободного прибора по кольцу от pointer;
-после выбора прибора i pointer = (i + 1) mod m.
-Единственный указатель в варианте 10.
-end note
-
-note bottom of StatsCollector
-ОР1: Таблица 1 по источникам (число заявок, Pотк, Tпреб, Tож, Tобсл,
-дисперсии Tож и Tобсл) и Таблица 2 по приборам
-(Kисп = busyTotal / totalTime).
-end note
 @enduml
