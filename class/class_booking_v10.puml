@@ -25,9 +25,6 @@ package "Данные" {
   class BookingRequest {
     - sourceId: int
     - seqNo: int
-    - sessionId: int
-    - seatIds: int[]
-    - ticketsCount: int
     - createdAt: double
     - enqueuedAt: double
     - serviceStartAt: double
@@ -37,6 +34,9 @@ package "Данные" {
     .. приоритет = sourceId, меньше номер — выше ..
     + priority(): int
     + label(): String
+    + getSourceId(): int
+    + getSeqNo(): int
+    + getCreatedAt(): double
     + getState(): BookingState
     + markQueued(t: double): void
     + markRejected(t: double): void
@@ -78,9 +78,6 @@ package "Элементы СМО" {
     + place(slot: int, req: BookingRequest): void
     + takeOut(slot: int): BookingRequest
     + slotOf(req: BookingRequest): int
-    + requestsOfSource(sourceId: int): BookingRequest[]
-    + highestPrioritySourceId(): int
-    + lowestPrioritySourceId(): int
     + snapshot(): BookingRequest[]
   }
 
@@ -133,10 +130,10 @@ package "Диспетчеры и дисциплины" {
   }
   class LowestPriorityRejection <<Д1ОО2>> {
     .. Д1ОО2 ..
-    отказ: наибольший номер источника в буфере
-    среди равных: самая поздняя по createdAt
-    новая ниже всех: отказ получает она сама
-    заявки на приборах не вытесняются
+    слабейшая заявка буфера: наибольший номер источника,
+    среди равных самая поздняя по createdAt
+    номер новой >= номера слабейшей: отказ новой
+    иначе выбивается слабейшая, приборы не затрагиваются
   }
 
   interface RequestSelectionPolicy <<Д2Б>> {
@@ -146,9 +143,10 @@ package "Диспетчеры и дисциплины" {
   class PackagePriorityPolicy <<Д2Б5>> {
     - pkg: Deque<BookingRequest>
     .. Д2Б5 ..
-    пакет пуст: снимок заявок источника
+    пакет пуст: по buffer.snapshot() берётся снимок заявок источника
     с наименьшим номером, FIFO по createdAt
     пакет не расширяется, его делят все приборы
+    триггер: освобождение или простой прибора
     выбитые заявки пропускаются в next()
   }
 
@@ -182,6 +180,8 @@ package "Ядро моделирования" {
     --
     + step(): boolean
     + runRealization(n: int): void
+    + reset(): void
+    + currentTime(): double
     + totalTime(): double
     + rejectProbability(): double
     + buildTable(): ResultTable
@@ -202,6 +202,11 @@ package "Ядро моделирования" {
     - kind: EventKind
     - sourceId: int
     - serverId: int
+    --
+    + getTime(): double
+    + getKind(): EventKind
+    + getSourceId(): int
+    + getServerId(): int
   }
 
   enum EventKind {
@@ -209,7 +214,20 @@ package "Ядро моделирования" {
     RELEASE
   }
 
+  class ModelApp {
+    - simulation: Simulation
+    - precision: PrecisionController
+    - stepRenderer: StepRenderer
+    - resultPrinter: ResultPrinter
+    .. пошаговый режим: step(), затем render(currentTime()) ..
+    .. авто режим: findN(), затем print(buildTable()) ..
+    --
+    + runStepMode(): void
+    + runAutoMode(): void
+  }
+
   class PrecisionController {
+    - simulation: Simulation
     - config: SimulationConfig
     - t: double = 1.643
     - delta: double = 0.1
@@ -275,7 +293,6 @@ package "Статистика и отображение" {
     BUFFERED
     REJECTED_NEW
     EVICTED
-    PACKAGE_FORMED
     PICKED_FROM_PACKAGE
     SENT_TO_DEVICE
     SERVED
@@ -338,7 +355,11 @@ JournalEntry --> JournalKind
 
 StatsCollector *-- "1..*" SourceStat
 StatsCollector ..> ResultTable : формирует
-PrecisionController ..> Simulation : запускает реализации
+PrecisionController --> Simulation : запускает реализации
+ModelApp --> Simulation
+ModelApp --> PrecisionController
+ModelApp --> StepRenderer
+ModelApp --> ResultPrinter
 StepRenderer --> EventCalendar
 StepRenderer --> SlotBuffer
 StepRenderer --> BookingServer
@@ -347,6 +368,12 @@ StepRenderer --> DevicePolicy
 StepRenderer --> EventJournal
 StepRenderer --> StatsCollector
 ResultPrinter ..> ResultTable
+
+note bottom of BookingState
+CREATED, QUEUED, SERVING, SERVED.
+REJECTED из CREATED (новая заявка)
+или из QUEUED (выбитая).
+end note
 
 note top of Simulation
 Триггеры: ARRIVAL запускает ДП (placeRequest), затем ДВ (dispatch).
