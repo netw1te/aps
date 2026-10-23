@@ -14,7 +14,7 @@ start
 repeat
   :t := 0, generated := 0,
   буфер пуст, все приборы свободны,
-  pointer Д2П2 := 0, пакет Д2Б5 пуст,
+  ptr Д2П2 := 0, пакет Д2Б5 пуст,
   статистика и журнал обнулены;
   :для каждого источника i планируем ARRIVAL(i)
   в момент U[a, b];
@@ -41,31 +41,34 @@ repeat
         endif
 
         |ДП|
-        :Д1ОЗ3: slot := firstEmptySlot();
+        :Д1ОЗ3: slot := findSlot(buffer)
+первое свободное место;
         if (slot найден?) then (да, HappyFlow по буферу)
           :place(slot, req), без сдвига,
-          state := QUEUED, журнал BUFFERED;
+          req.markQueued(t), журнал BUFFERED;
         else (нет, буфер полон)
-          :Д1ОО2: v := chooseVictim(buffer, req)
-          наименьший приоритет в буфере,
-          среди равных самая поздняя;
-          if (v = req?) then (да, новая хуже всех)
-            :state := REJECTED;
+          :Д1ОО2: victim := chooseVictim(buffer, req)
+          слабейшая заявка буфера: наибольший номер
+          источника, среди равных самая поздняя;
+          if (victim = req?) then (да, номер req >= номера слабейшей)
+            :req.markRejected(t);
             |Статистика|
             :onRejected(req), журнал REJECTED_NEW;
           else (нет, выбивание)
             |ДП|
-            :takeOut(slotOf(v)), place(slot, req),
-            state := QUEUED, журнал BUFFERED;
+            :victim.markRejected(t),
+            slot := slotOf(victim), takeOut(slot),
+            place(slot, req), req.markQueued(t),
+            журнал BUFFERED;
             |Статистика|
-            :onRejected(v), журнал EVICTED;
+            :onRejected(victim), журнал EVICTED;
           endif
         endif
 
       else (RELEASE)
         |Прибор|
         :ПЗ1: served := servers[d].complete(t),
-        прибор d свободен;
+        served.markServed(), прибор d свободен;
         |Статистика|
         :onServed(served), журнал SERVED;
       endif
@@ -73,22 +76,26 @@ repeat
       |ДВ|
       :триггер: после ARRIVAL или RELEASE;
       while (буфер не пуст и есть свободный прибор?) is (да)
-        :Д2Б5: req := requestPolicy.next(buffer)
-        если пакет пуст, формируется новый
-        снимок заявок источника с наименьшим
-        номером, журнал PACKAGE_FORMED;
-        :Д2П2: pickDevice(servers)
-        поиск по кольцу от pointer;
+        repeat
+          if (пакет пуст?) then (да)
+            :Д2Б5: формируем пакет, снимок заявок
+            источника с наименьшим номером, FIFO;
+          else (нет)
+          endif
+          :req := первая заявка пакета;
+        repeat while (заявка выбита, state = REJECTED?) is (да) not (нет)
+        :Д2П2: d := pickDevice(servers)
+        поиск по кольцу от ptr;
         |Прибор|
         :isIdle() у приборов по кольцу,
         первый свободный прибор d;
         |ДВ|
-        :pointer := (d + 1) mod m;
+        :ptr := (d + 1) mod m, внутри pickDevice;
         :takeOut(slotOf(req)),
         журнал PICKED_FROM_PACKAGE;
         |Прибор|
         :endAt := servers[d].beginService(req, t)
-        время обслуживания по ПЗ1;
+        req.markServing(t, endAt), время по ПЗ1;
         |ДВ|
         :calendar.push(RELEASE(d, endAt)),
         журнал SENT_TO_DEVICE;
@@ -105,14 +112,14 @@ repeat
   |Ядро|
   :T_реал := t,
   p := число отказов / N;
-  if (p_prev задано и abs(p_prev − p) < 0.1 · p_prev?) then (да)
+  if (p_prev задано и abs(p_prev − p) <= 0.1 · p_prev?) then (да)
     :done := true;
   else (нет)
     :p_prev := p;
     if (p = 0?) then (да)
       :N := 2 · N;
     else (нет)
-      :N := 1.643² · (1 − p) / (0.1² · p);
+      :N := ceil(1.643² · (1 − p) / (0.1² · p));
     endif
   endif
 repeat while (done = false?) is (да) not (нет)
