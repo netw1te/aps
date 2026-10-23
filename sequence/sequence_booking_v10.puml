@@ -6,8 +6,12 @@ participant "Ядро\n(Simulation)" as Core
 participant "Календарь\nсобытий" as Cal
 participant "Источник\n(ИБ, ИЗ2)" as Src
 participant "Диспетчер\nпостановки (ДП)" as DP
-database "Буфер\n(Д1ОЗ3, Д1ОО2)" as Buf
+participant "Политика\nпостановки\n(Д1ОЗ3)" as AP
+participant "Политика\nотказа\n(Д1ОО2)" as RP
+database "Буфер" as Buf
 participant "Диспетчер\nвыбора (ДВ)" as DV
+participant "Политика\nвыбора заявки\n(Д2Б5)" as SP
+participant "Политика\nвыбора прибора\n(Д2П2)" as DevP
 participant "Прибор\n(ПЗ1)" as Dev
 participant "Статистика\n(ОР1)" as St
 participant "Журнал\nсобытий (ОД1)" as J
@@ -20,24 +24,47 @@ note over Core, J
 либо уходит новая заявка, либо выбивается уже стоящая.
 Триггеры ДП: событие ARRIVAL. Триггеры ДВ: после ARRIVAL и после RELEASE.
 Статистика: onGenerated при генерации, onRejected при отказе, onServed при RELEASE.
+Методы без возвращаемого значения (place, push, removeAll) ответов не имеют.
 end note
+
+note over Core, J
+Сквозной сценарий (п. 2 памятки), метки «шаг 1, 2, 3» стоят на ветках ниже.
+Предусловие: буфер полон, все приборы заняты.
+Шаг 1: ARRIVAL, отказ новой заявки или выбивание (Д1ОО2). Следом dispatch не находит
+свободного прибора, поэтому заявки остаются в буфере.
+Шаг 2: RELEASE, прибор освободился, срабатывает dispatch.
+Шаг 3: Д2Б5 выбирает заявку из пакета, Д2П2 выбирает прибор, одна заявка уходит на обработку.
+HappyFlow: ARRIVAL при свободном буфере и свободном приборе, заявка встаёт в буфер
+и в том же dispatch уходит на прибор.
+Вызовы вида req.markQueued(t) — методы BookingRequest, отдельный участник не показан.
+end note
+
+== Инициализация ==
+
+loop для каждого источника i
+  Core -> Src : nextInterval()
+  Src --> Core : dt ~ U[a, b] (ИЗ2)
+  Core -> Cal : push ARRIVAL(i, dt)
+end
+
+== Основной цикл ==
 
 loop пока календарь событий не пуст
   Core -> Cal : pop()
   Cal --> Core : ev = ARRIVAL(i, t) | RELEASE(d, t)
 
-  alt ev = ARRIVAL(i, t): наступило время генерации у источника i
+  alt ev = ARRIVAL(i, t): приход заявки (шаг 1 сквозного сценария)
     Core -> Src : buildRequest(t)
     Src --> Core : req (номер i.j, Tвх = t)
     Core -> St : onGenerated(req)
-    Core -> J : log(GENERATED, req)
+    Core -> J : log(GENERATED, req, t)
+    Core -> Core : generated := generated + 1
     alt generated < N
       Core -> Src : nextInterval()
       Src --> Core : dt ~ U[a, b] (ИЗ2)
       Core -> Cal : push ARRIVAL(i, t + dt)
     else generated = N: сгенерирована последняя заявка
       Core -> Cal : removeAll(ARRIVAL)
-      Cal --> Core : ok
     end
 
     Core -> DP : placeRequest(req, t)
@@ -45,49 +72,58 @@ loop пока календарь событий не пуст
     Триггер ДП: появилась новая заявка.
     ДП работает только с буфером и о приборах ничего не знает.
     end note
-    DP -> Buf : firstEmptySlot()
-    Buf --> DP : slot | NONE
+    DP -> AP : findSlot(buffer)
+    AP -> Buf : firstEmptySlot()
+    Buf --> AP : slot | NONE
+    AP --> DP : slot | NONE
 
-    alt HappyFlow: буфер свободен, есть свободное место (Д1ОЗ3)
-      note right of Buf
+    alt slot найден: HappyFlow, буфер свободен (Д1ОЗ3)
+      note right of AP
       Д1ОЗ3: постановка на первое от начала
       свободное место, сдвига очереди нет.
       end note
       DP -> Buf : place(slot, req)
-      Buf --> DP : ok
-      DP -> J : log(BUFFERED, req)
-    else Краевой кейс 1: буфер полон, отказ или выбивание (Д1ОО2)
-      note right of Buf
-      Д1ОО2: отказ получает заявка с наименьшим приоритетом
-      (наибольший номер источника) среди заявок в буфере.
-      Среди равных — самая поздняя по Tвх.
-      Если новая заявка ещё ниже по приоритету, отказ получает она.
+      DP -> DP : req.markQueued(t)
+      DP -> J : log(BUFFERED, req, t)
+    else NONE: краевой кейс 1 — буфер полон, отказ или выбивание (Д1ОО2), шаг 1
+      note right of RP
+      Д1ОО2: отказ получает самая слабая заявка буфера:
+      наибольший номер источника, среди равных самая поздняя.
+      Если номер источника новой заявки >= номера самой слабой,
+      отказ получает новая (она самая поздняя среди равных),
+      иначе выбивается самая слабая из буфера.
+      Заявки на приборах не вытесняются.
       end note
-      DP -> Buf : lowestPrioritySourceId()
-      Buf --> DP : sourceId
-      DP -> Buf : requestsOfSource(sourceId)
-      Buf --> DP : кандидаты на выбивание
-      DP -> DP : victim := самая поздняя из кандидатов, либо req, если её приоритет ниже
+      DP -> RP : chooseVictim(buffer, req)
+      RP -> Buf : snapshot()
+      Buf --> RP : заявки буфера
+      RP -> RP : v := самая слабая заявка буфера
+      RP -> RP : если № источника req >= № источника v, victim := req, иначе victim := v
+      RP --> DP : victim
       alt victim = req: новая заявка получает отказ
+        DP -> DP : req.markRejected(t)
         DP -> St : onRejected(req)
-        DP -> J : log(REJECTED_NEW, req)
-      else выбивание: из буфера уходит стоящая заявка
-        DP -> Buf : takeOut(slotOf(victim))
+        DP -> J : log(REJECTED_NEW, req, t)
+      else victim из буфера: выбивание
+        DP -> DP : victim.markRejected(t)
+        DP -> Buf : slotOf(victim)
+        Buf --> DP : slot
+        DP -> Buf : takeOut(slot)
         Buf --> DP : victim
         DP -> St : onRejected(victim)
-        DP -> J : log(EVICTED, victim)
-        DP -> Buf : place(slot освобождённого места, req)
-        Buf --> DP : ok
-        DP -> J : log(BUFFERED, req)
+        DP -> J : log(EVICTED, victim, t)
+        DP -> Buf : place(slot, req)
+        DP -> DP : req.markQueued(t)
+        DP -> J : log(BUFFERED, req, t)
       end
     end
-    DP --> Core : готово
 
-  else ev = RELEASE(d, t): прибор d закончил обслуживание
+  else ev = RELEASE(d, t): сквозной сценарий, шаг 2 — прибор d освободился
     Core -> Dev : complete(t)
+    Dev -> Dev : served_req.markServed()
     Dev --> Core : served_req
     Core -> St : onServed(served_req)
-    Core -> J : log(SERVED, served_req)
+    Core -> J : log(SERVED, served_req, t)
   end
 
   Core -> DV : dispatch(t)
@@ -96,56 +132,71 @@ loop пока календарь событий не пуст
   (в буфере появилась заявка и/или освободился прибор).
   end note
 
-  loop пока occupiedCount() > 0 и есть свободный прибор
+  loop повторять, пока ДВ может передать заявку
     DV -> Buf : occupiedCount()
-    Buf --> DV : k > 0
+    Buf --> DV : k
+    DV -> DevP : hasIdle(servers)
+    DevP -> Dev : isIdle() у каждого прибора
+    Dev --> DevP : занят | свободен
+    DevP --> DV : true | false
 
-    group Краевой кейс 2: выборка из буфера (Д2Б5)
-      note right of Buf
-      Д2Б5: пакет — все заявки одного источника (наименьший номер),
-      находящиеся в буфере в момент формирования. Пакет не расширяется,
-      новые заявки этого источника в него не попадают. Все приборы
-      обслуживают один пакет, после его исчерпания формируется новый.
-      Внутри пакета порядок FIFO по Tвх.
-      end note
-      opt пакет пуст: формируется новый пакет
-        DV -> Buf : highestPrioritySourceId()
-        Buf --> DV : sourceId (наименьший номер)
-        DV -> Buf : requestsOfSource(sourceId)
-        Buf --> DV : снимок заявок источника
-        DV -> J : log(PACKAGE_FORMED)
+    alt k > 0 и есть свободный прибор: заявка передаётся на обработку (шаг 3 сквозного сценария)
+      group Д2Б5: выбор заявки из пакета
+        note right of SP
+        Д2Б5: пакет — все заявки одного источника (наименьший номер),
+        находящиеся в буфере в момент формирования. Пакет не расширяется,
+        новые заявки этого источника в него не попадают. Все приборы
+        обслуживают один пакет, после его исчерпания формируется новый.
+        Внутри пакета порядок FIFO по Tвх. Выбитые заявки пропускаются.
+        Триггер формирования пакета — освобождение прибора. Свободный (простаивающий)
+        прибор приравнивается к освободившемуся, поэтому в HappyFlow пакет
+        формируется уже на ARRIVAL, в том же dispatch.
+        end note
+        DV -> SP : next(buffer)
+        loop повторять, пока выбрана выбитая заявка (state = REJECTED), минимум одна итерация
+          opt пакет пуст: формируется новый пакет
+            SP -> Buf : snapshot()
+            Buf --> SP : заявки буфера
+            SP -> SP : pkg := снимок заявок источника с наименьшим номером, FIFO
+          end
+          SP -> SP : req := pkg.pollFirst()
+        end
+        SP --> DV : req
       end
-      DV -> DV : req := первая заявка пакета (выбитые пропускаются)
-      DV -> Buf : takeOut(slotOf(req))
-      Buf --> DV : req
-      DV -> J : log(PICKED_FROM_PACKAGE, req)
-    end
 
-    group Краевой кейс 3: постановка на прибор (Д2П2)
-      note right of Dev
-      Д2П2: поиск свободного прибора по кольцу от pointer,
-      заявка встаёт на первый найденный свободный прибор,
-      затем pointer := (d + 1) mod m.
-      end note
-      DV -> Dev : isIdle() по кольцу от pointer
-      Dev --> DV : d (первый свободный прибор)
-      DV -> DV : pointer := (d + 1) mod m
-      DV -> Dev : beginService(req, t)
-      Dev --> DV : endAt (длительность по ПЗ1)
-      DV -> Cal : push RELEASE(d, endAt)
-      Cal --> DV : ok
-      DV -> J : log(SENT_TO_DEVICE, req)
+      group Д2П2: выбор прибора
+        note right of DevP
+        Д2П2: поиск свободного прибора по кольцу от ptr,
+        заявка встаёт на первый найденный свободный прибор.
+        Указатель ptr закрыт и меняется только внутри pickDevice.
+        end note
+        DV -> DevP : pickDevice(servers)
+        DevP -> Dev : isIdle() по кольцу от ptr
+        Dev --> DevP : занят | свободен
+        DevP -> DevP : ptr := (d + 1) mod m
+        DevP --> DV : d
+      end
+
+      group Краевые кейсы 2 и 3: выборка из буфера и постановка на прибор
+        DV -> Buf : slotOf(req)
+        Buf --> DV : slot
+        DV -> Buf : takeOut(slot)
+        Buf --> DV : req
+        DV -> J : log(PICKED_FROM_PACKAGE, req, t)
+        DV -> Dev : beginService(req, t)
+        Dev -> Dev : req.markServing(t, endAt)
+        Dev --> DV : endAt (длительность по ПЗ1)
+        DV -> Cal : push RELEASE(d, endAt)
+        DV -> J : log(SENT_TO_DEVICE, req, t)
+      end
+    else буфер пуст или все приборы заняты: выход из цикла, заявки ждут RELEASE (шаг 1, приборы заняты)
+      DV -> DV : ничего не передаём
     end
   end
-  DV --> Core : готово
 end
 
 note over Core, J
-Сквозной сценарий отказа и последующей обработки:
-1) ARRIVAL при полном буфере и занятых приборах. Ветка Краевой кейс 1, выбивание или отказ новой.
-2) Позже RELEASE освобождает прибор, и срабатывает триггер ДВ.
-3) ДВ формирует пакет (Д2Б5), выбирает прибор по кольцу (Д2П2) и ставит на него заявку.
-HappyFlow: ARRIVAL при свободном буфере и свободном приборе. Заявка встаёт на первое свободное место
-и в том же dispatch(t) сразу уходит на прибор.
+Жизненный цикл заявки: CREATED, QUEUED, SERVING, SERVED.
+REJECTED из CREATED (новая заявка) или из QUEUED (выбитая).
 end note
 @enduml
